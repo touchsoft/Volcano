@@ -14,8 +14,18 @@ class VolcanoApp extends StatelessWidget {
     return MaterialApp(
       title: 'Volcano Truck Game',
       theme: ThemeData.dark(),
-      home: GameWidget<VolcanoGame>.controlled(
-        gameFactory: VolcanoGame.new,
+      home: Scaffold(
+        backgroundColor: Colors.black,
+        body: SafeArea(
+          child: Center(
+            child: AspectRatio(
+              aspectRatio: 480 / 720, // Match game dimensions
+              child: GameWidget<VolcanoGame>.controlled(
+                gameFactory: VolcanoGame.new,
+              ),
+            ),
+          ),
+        ),
       ),
       debugShowCheckedModeBanner: false,
     );
