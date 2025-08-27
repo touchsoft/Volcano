@@ -4,7 +4,7 @@ import 'package:flutter/material.dart';
 
 class ParticleExplosion extends Component {
   final Vector2 position;
-  final Color color;
+  final List<Color> colors;
   final List<Particle> particles = [];
   final int particleCount;
   final double speedMultiplier;
@@ -14,24 +14,31 @@ class ParticleExplosion extends Component {
   
   ParticleExplosion({
     required this.position,
-    required this.color,
+    Color? color,
+    List<Color>? colors,
     this.particleCount = 8,
     this.speedMultiplier = 1.0,
     this.sizeMultiplier = 1.0,
-  });
+  }) : colors = colors ?? [color ?? Colors.white];
   
   @override
   Future<void> onLoad() async {
     final random = Random();
     
+    // Set explosion to very high priority to be in front of everything
+    priority = 1000;
+    
     for (int i = 0; i < particleCount; i++) {
       final angle = (i / particleCount) * 2 * pi;
       final speed = (50 + random.nextDouble() * 50) * speedMultiplier;
       
+      // Pick a random color from the available colors
+      final particleColor = colors[random.nextInt(colors.length)];
+      
       particles.add(Particle(
         position: position.clone(),
         velocity: Vector2(cos(angle) * speed, sin(angle) * speed),
-        color: color,
+        color: particleColor,
         size: (2 + random.nextDouble() * 3) * sizeMultiplier,
       ));
     }

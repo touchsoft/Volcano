@@ -21,6 +21,12 @@ class Rock extends SpriteComponent with CollisionCallbacks {
   late double startTime;
   late double flightDuration;
   
+  // Special red rock mechanics
+  bool isSpecialRed = false;
+  bool hasLanded = false;
+  double landTime = 0.0;
+  double initialSize = 20.0;
+  
   static const double ovalWidth = 140.0;
   static const double ovalHeight = 80.0;
   
@@ -43,6 +49,12 @@ class Rock extends SpriteComponent with CollisionCallbacks {
     position = startPosition.clone();
     startTime = DateTime.now().millisecondsSinceEpoch / 1000.0;
     
+    // 1 in 5 red rocks are special (don't explode on landing)
+    final random = Random();
+    if (!isGrey && random.nextInt(5) == 0) {
+      isSpecialRed = true;
+    }
+    
     _calculateTrajectory();
   }
   
@@ -50,7 +62,8 @@ class Rock extends SpriteComponent with CollisionCallbacks {
     final random = Random();
     
     // Target should be on the island edge (truck path area)
-    final angle = random.nextDouble() * 2 * pi;
+    // Use angles that avoid the very top of the screen: 30° to 330° (avoiding 330°-30°)
+    final angle = random.nextDouble() * (5 * pi / 3) + pi / 6; // 30° to 330°
     
     // Calculate island boundaries (edge of the yellow island)
     final islandRadiusX = ovalWidth * 1.6; // Island is larger than truck path
@@ -81,8 +94,17 @@ class Rock extends SpriteComponent with CollisionCallbacks {
     
     if (hasCollided) return;
     
-    position += velocity * dt;
-    velocity.y += gravity * dt;
+    // Special red rocks that have landed should not move or spin
+    if (hasLanded && isSpecialRed) {
+      // Do nothing - rock stays in place
+    } else {
+      // Normal physics for flying rocks
+      position += velocity * dt;
+      velocity.y += gravity * dt;
+      
+      // Spin the rock on its center axis during flight
+      angle += 3.0 * dt; // 3 radians per second spin
+    }
     
     // Calculate flight progress (0.0 = just launched, 1.0 = about to land)
     final currentTime = DateTime.now().millisecondsSinceEpoch / 1000.0;
@@ -100,18 +122,58 @@ class Rock extends SpriteComponent with CollisionCallbacks {
     final centerY = gameHeight / 2;
     final truckPathY = centerY + ovalHeight * 0.8; // Ground level of truck path (thick blue line)
     
-    if (position.y >= truckPathY) {
-      // Rock hit the ground, create explosion
-      final game = findGame()! as VolcanoGame;
-      final explosion = ParticleExplosion(
-        position: position.clone(),
-        color: isGrey ? Colors.grey : Colors.red,
-      );
-      game.add(explosion);
+    if (position.y >= truckPathY && !hasLanded) {
+      if (isSpecialRed) {
+        // Special red rock lands but doesn't explode immediately
+        hasLanded = true;
+        landTime = DateTime.now().millisecondsSinceEpoch / 1000.0;
+        velocity = Vector2.zero(); // Stop moving
+        position.y = truckPathY; // Lock to ground level
+        angle = 0; // Stop spinning
+      } else {
+        // Normal rock explodes on impact
+        final game = findGame()! as VolcanoGame;
+        final explosion = ParticleExplosion(
+          position: position.clone(),
+          color: isGrey ? Colors.grey : Colors.red,
+        );
+        game.add(explosion);
+        
+        // Play random crash sound
+        game.playRandomCrashSound();
+        
+        hasCollided = true;
+        removeFromParent();
+        return;
+      }
+    }
+    
+    // Handle special red rock growth and delayed explosion
+    if (hasLanded && isSpecialRed) {
+      final currentTime = DateTime.now().millisecondsSinceEpoch / 1000.0;
+      final timeSinceLanding = currentTime - landTime;
       
-      hasCollided = true;
-      removeFromParent();
-      return;
+      if (timeSinceLanding < 2.0) {
+        // Grow over 2 seconds
+        final growthProgress = timeSinceLanding / 2.0;
+        final currentSize = initialSize + (initialSize * growthProgress); // Double in size
+        size = Vector2.all(currentSize);
+      } else {
+        // After 2 seconds, explode
+        final game = findGame()! as VolcanoGame;
+        final explosion = ParticleExplosion(
+          position: position.clone(),
+          color: Colors.red,
+        );
+        game.add(explosion);
+        
+        // Play random crash sound
+        game.playRandomCrashSound();
+        
+        hasCollided = true;
+        removeFromParent();
+        return;
+      }
     }
     
     if (position.y > gameHeight + 50 || 
@@ -132,12 +194,28 @@ class Rock extends SpriteComponent with CollisionCallbacks {
       if (!isGrey) {
         final explosion = ParticleExplosion(
           position: position.clone(),
-          color: Colors.red,
-          particleCount: 16, // More particles
+          colors: [Colors.red, Colors.red, Colors.red, Colors.red, Colors.orange, Colors.black], // Predominantly red
+          particleCount: 25, // More particles
           speedMultiplier: 2.0, // Faster particles
-          sizeMultiplier: 2.5, // Larger particles
+          sizeMultiplier: 1.5, // Smaller particles
         );
         game.add(explosion);
+      }
+      
+      // Play random crash sound for truck collisions
+      game.playRandomCrashSound();
+      
+      // Special red rocks that have landed still cause life loss when hit
+      if (isSpecialRed && hasLanded) {
+        // Instant explosion for landed special red rock
+        final bigExplosion = ParticleExplosion(
+          position: position.clone(),
+          colors: [Colors.red, Colors.red, Colors.red, Colors.red, Colors.red, Colors.orange, Colors.black, Colors.yellow], // Predominantly red
+          particleCount: 35, // Even more particles for landed rock
+          speedMultiplier: 3.0, // Faster explosion
+          sizeMultiplier: 1.8, // Smaller particles but more of them
+        );
+        game.add(bigExplosion);
       }
       
       game.collectRock(isGrey);
