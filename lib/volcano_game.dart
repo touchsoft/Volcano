@@ -12,6 +12,10 @@ import 'components/input_handler.dart';
 import 'components/control_bar.dart';
 import 'components/particle_explosion.dart';
 import 'components/volcano_smoke.dart';
+import 'components/volcano_lava.dart';
+
+// Bridge animation phases
+enum BridgePhase { driving_to_bridge, fading_islands, crossing_bridge, completed }
 
 class VolcanoGame extends FlameGame with HasCollisionDetection {
   static const double gameWidth = 480.0;
@@ -21,13 +25,14 @@ class VolcanoGame extends FlameGame with HasCollisionDetection {
   late SpriteComponent island;
   late SpriteComponent volcano;
   late VolcanoSmoke volcanoSmoke;
+  late VolcanoLava volcanoLava;
   
   double rockSpawnTimer = 0;
   double rockSpawnInterval = 5.0; // Start with 5 second pause between groups
   final Random random = Random();
   double gameTime = 0;
   int currentActiveRocks = 0;
-  final int maxRocks = 15; // Increased since we're firing in groups
+  int maxRocks = 3; // Dynamic max rocks based on level
   
   // Group firing variables
   bool isFiringGroup = false;
@@ -46,12 +51,67 @@ class VolcanoGame extends FlameGame with HasCollisionDetection {
   
   int lives = 3;
   int greyRocksCollected = 0;
-  int rocksNeededForBridge = 10;
+  int rocksNeededForBridge = 3; // Dynamic rocks needed based on level
   
   bool isGameOver = false;
+  bool isBridgeSequence = false;
+  bool isLevelTransition = false;
+  double bridgeAnimationTimer = 0.0;
+  double levelTransitionTimer = 0.0;
+  int currentLevel = 1;
+  bool showingLevelText = false;
+  
+  BridgePhase bridgePhase = BridgePhase.driving_to_bridge;
+  
+  // Background music management
+  bool rumblePlaying = false;
   
   @override
   Color backgroundColor() => const Color(0xFF87CEEB);
+
+  @override
+  void render(Canvas canvas) {
+    super.render(canvas);
+    
+    // Handle island fade during bridge sequence
+    if (isBridgeSequence && bridgePhase == BridgePhase.fading_islands) {
+      final fadeProgress = (bridgeAnimationTimer / 1.0).clamp(0.0, 1.0);
+      
+      // Render island3 overlay with increasing opacity
+      final island3Paint = Paint()..color = Colors.white.withOpacity(fadeProgress);
+      final island3Sprite = Sprite(images.fromCache('island3.png'));
+      island3Sprite.render(
+        canvas, 
+        size: Vector2(size.x, size.y),
+        position: Vector2(size.x / 2, size.y / 2),
+        anchor: Anchor.center,
+        overridePaint: island3Paint,
+      );
+    }
+    
+    // Handle level transition fade effects
+    if (isLevelTransition) {
+      final fadeColor = Colors.black;
+      
+      if (!showingLevelText) {
+        // Fade to black over 1 second
+        final fadeProgress = (levelTransitionTimer / 1.0).clamp(0.0, 1.0);
+        final fadePaint = Paint()..color = fadeColor.withOpacity(fadeProgress);
+        canvas.drawRect(
+          Rect.fromLTWH(0, 0, size.x, size.y),
+          fadePaint,
+        );
+      } else {
+        // Fade from black after showing level text
+        final fadeProgress = (levelTransitionTimer / 1.0).clamp(0.0, 1.0);
+        final fadePaint = Paint()..color = fadeColor.withOpacity(1.0 - fadeProgress);
+        canvas.drawRect(
+          Rect.fromLTWH(0, 0, size.x, size.y),
+          fadePaint,
+        );
+      }
+    }
+  }
 
   @override
   Future<void> onLoad() async {
@@ -68,6 +128,7 @@ class VolcanoGame extends FlameGame with HasCollisionDetection {
   Future<void> _loadSprites() async {
     await images.loadAll([
       'island2.png',
+      'island3.png',
       'volcano2.png', 
       'truck-0.png',
       'truck-45.png',
@@ -87,7 +148,11 @@ class VolcanoGame extends FlameGame with HasCollisionDetection {
       FlameAudio.audioCache.load('crash2.mp3'),
       FlameAudio.audioCache.load('crash3.mp3'),
       FlameAudio.audioCache.load('crash4.mp3'),
+      FlameAudio.audioCache.load('rumble.mp3'),
     ]);
+    
+    // Start background rumble music loop
+    _startRumbleLoop();
   }
   
   void _setupGame() {
@@ -110,6 +175,9 @@ class VolcanoGame extends FlameGame with HasCollisionDetection {
     volcano.priority = 10; // Always at front
     add(volcano);
     
+    volcanoLava = VolcanoLava(volcanoPosition: originalVolcanoPosition.clone());
+    add(volcanoLava);
+    
     volcanoSmoke = VolcanoSmoke(volcanoPosition: originalVolcanoPosition.clone());
     add(volcanoSmoke);
     
@@ -125,6 +193,13 @@ class VolcanoGame extends FlameGame with HasCollisionDetection {
     add(inputHandler);
     
     add(ControlBar());
+    
+    // Show initial level text
+    add(_LevelText(currentLevel));
+    
+    // Set initial level difficulty
+    maxRocks = 2 + currentLevel; // Level 1: 3 rocks, Level 2: 4 rocks, etc.
+    rocksNeededForBridge = 2 + currentLevel; // Level 1: 3 needed, Level 2: 4 needed, etc.
   }
   
   @override
@@ -132,6 +207,18 @@ class VolcanoGame extends FlameGame with HasCollisionDetection {
     super.update(dt);
     
     if (isGameOver) return;
+    
+    // Handle level transition
+    if (isLevelTransition) {
+      _updateLevelTransition(dt);
+      return;
+    }
+    
+    // Handle bridge sequence
+    if (isBridgeSequence) {
+      _updateBridgeSequence(dt);
+      return;
+    }
     
     gameTime += dt;
     
@@ -200,8 +287,8 @@ class VolcanoGame extends FlameGame with HasCollisionDetection {
     
     if (lives <= 0) {
       _gameOver();
-    } else if (greyRocksCollected >= rocksNeededForBridge) {
-      _levelComplete();
+    } else if (greyRocksCollected >= rocksNeededForBridge && !isBridgeSequence) {
+      _startBridgeSequence();
     }
   }
   
@@ -263,9 +350,161 @@ class VolcanoGame extends FlameGame with HasCollisionDetection {
     add(_GameOverText());
   }
   
-  void _levelComplete() {
-    isGameOver = true;
-    add(_LevelCompleteText());
+  void _startBridgeSequence() {
+    isBridgeSequence = true;
+    bridgePhase = BridgePhase.driving_to_bridge;
+    bridgeAnimationTimer = 0.0;
+    
+    // Stop truck controls immediately
+    truck.isControlled = false;
+  }
+  
+  void _updateBridgeSequence(double dt) {
+    bridgeAnimationTimer += dt;
+    
+    switch (bridgePhase) {
+      case BridgePhase.driving_to_bridge:
+        _updateDrivingToBridge(dt);
+        break;
+      case BridgePhase.fading_islands:
+        _updateFadingIslands(dt);
+        break;
+      case BridgePhase.crossing_bridge:
+        _updateCrossingBridge(dt);
+        break;
+      case BridgePhase.completed:
+        _startLevelTransition();
+        break;
+    }
+  }
+  
+  void _updateDrivingToBridge(double dt) {
+    // Drive truck to bridge entrance (bridge center at 62% of screen width)
+    final bridgeTopCenterX = size.x * 0.62; // Bridge center at top (adjusted +0.02)
+    final targetPosition = Vector2(bridgeTopCenterX, size.y / 2 + 140); // Bridge entrance
+    final distance = (targetPosition - truck.position).length;
+    
+    if (distance > 10) {
+      // Still driving to bridge - use same logic as normal truck movement
+      final direction = (targetPosition - truck.position).normalized();
+      truck.position += direction * 100 * dt; // Move at constant speed
+      
+      // Use exact same sprite logic as when user is controlling
+      final movementAngle = atan2(direction.y, direction.x);
+      truck.angle = movementAngle; // Set the angle for sprite selection
+      // Call truck's existing sprite update method
+      truck.updateSpriteForAngle();
+      // Reset angle to 0 like the truck normally does (sprites are pre-rotated)
+      truck.angle = 0;
+      
+    } else {
+      // Reached bridge position - stop and face downward
+      truck.position = targetPosition; // Lock to exact position
+      truck.sprite = Sprite(images.fromCache('truck-180.png')); // Face downward
+      truck.angle = 0; // Ensure no rotation is applied
+      
+      // Immediately start fading islands (no delay)
+      bridgePhase = BridgePhase.fading_islands;
+      bridgeAnimationTimer = 0.0;
+    }
+  }
+  
+  void _updateTruckSpriteForDirection(double movementAngle) {
+    double angleDegrees = (movementAngle * 180 / pi) % 360;
+    if (angleDegrees < 0) angleDegrees += 360;
+    
+    String spriteFile;
+    if (angleDegrees >= 337.5 || angleDegrees < 22.5) {
+      spriteFile = 'truck-0.png';      // Moving right
+    } else if (angleDegrees >= 22.5 && angleDegrees < 67.5) {
+      spriteFile = 'truck-45.png';     // Moving down-right
+    } else if (angleDegrees >= 67.5 && angleDegrees < 112.5) {
+      spriteFile = 'truck-90.png';     // Moving down
+    } else if (angleDegrees >= 112.5 && angleDegrees < 157.5) {
+      spriteFile = 'truck-135.png';    // Moving down-left
+    } else if (angleDegrees >= 157.5 && angleDegrees < 202.5) {
+      spriteFile = 'truck-180.png';    // Moving left
+    } else if (angleDegrees >= 202.5 && angleDegrees < 247.5) {
+      spriteFile = 'truck-225.png';    // Moving up-left
+    } else if (angleDegrees >= 247.5 && angleDegrees < 292.5) {
+      spriteFile = 'truck-270.png';    // Moving up
+    } else {
+      spriteFile = 'truck-315.png';    // Moving up-right
+    }
+    
+    truck.sprite = Sprite(images.fromCache(spriteFile));
+  }
+  
+  void _updateFadingIslands(double dt) {
+    // Fade between island2 and island3 over 1 second
+    final fadeProgress = (bridgeAnimationTimer / 1.0).clamp(0.0, 1.0);
+    
+    if (fadeProgress >= 1.0) {
+      // Switch to island3 completely
+      island.sprite = Sprite(images.fromCache('island3.png'));
+      island.opacity = 1.0;
+      bridgePhase = BridgePhase.crossing_bridge;
+      bridgeAnimationTimer = 0.0;
+    } else {
+      // Blend between islands
+      island.opacity = 1.0 - fadeProgress * 0.5; // Fade out island2 partially
+      // We'll overlay island3 in render method
+    }
+  }
+  
+  void _updateCrossingBridge(double dt) {
+    // Drive truck down the bridge and off screen
+    truck.position.y += 80 * dt; // Move downward
+    
+    // Scale truck up by 40% over the crossing (starting from bridge entrance)
+    final bridgeStart = size.y / 2 + 140;
+    final bridgeLength = size.y * 0.4; // Bridge extends down 40% of screen height
+    final crossingProgress = ((truck.position.y - bridgeStart) / bridgeLength).clamp(0.0, 1.0);
+    final scaleValue = 1.0 + (0.4 * crossingProgress);
+    truck.scale = Vector2.all(scaleValue);
+    
+    // Adjust truck X position to follow bridge center as it narrows
+    // Bridge center: 62% at top, 68% at bottom (adjusted +0.02 for both)
+    final bridgeTopCenterX = size.x * 0.62;
+    final bridgeBottomCenterX = size.x * 0.68;
+    final currentCenterX = bridgeTopCenterX + (crossingProgress * (bridgeBottomCenterX - bridgeTopCenterX));
+    truck.position.x = currentCenterX;
+    
+    // Fade truck out as it approaches the end of the bridge (last 25% of crossing)
+    if (crossingProgress > 0.75) {
+      final fadeProgress = (crossingProgress - 0.75) / 0.25; // 0.0 to 1.0 over last 25%
+      truck.opacity = 1.0 - fadeProgress;
+    } else {
+      truck.opacity = 1.0;
+    }
+    
+    // When truck goes off screen, complete sequence
+    if (truck.position.y > size.y + 50) {
+      bridgePhase = BridgePhase.completed;
+    }
+  }
+  
+  void _startLevelTransition() {
+    isBridgeSequence = false;
+    isLevelTransition = true;
+    levelTransitionTimer = 0.0;
+    showingLevelText = false;
+  }
+  
+  void _updateLevelTransition(double dt) {
+    levelTransitionTimer += dt;
+    
+    if (!showingLevelText && levelTransitionTimer >= 1.0) {
+      // After 1s fade to black, show level text
+      showingLevelText = true;
+      currentLevel++;
+      levelTransitionTimer = 0.0;
+    }
+    
+    if (showingLevelText && levelTransitionTimer >= 2.0) {
+      // After 2s showing level text, restart game
+      _restartForNextLevel();
+    }
   }
   
   void playRandomCrashSound() {
@@ -273,15 +512,32 @@ class VolcanoGame extends FlameGame with HasCollisionDetection {
     FlameAudio.play('crash$soundIndex.mp3');
   }
 
-  void restartGame() {
+  void _startRumbleLoop() async {
+    if (!rumblePlaying) {
+      rumblePlaying = true;
+      while (rumblePlaying && !isGameOver) {
+        await FlameAudio.play('rumble.mp3', volume: 0.5);
+        // Small delay to prevent overlapping if the sound finishes quickly
+        await Future.delayed(const Duration(milliseconds: 100));
+      }
+    }
+  }
+
+  void _restartForNextLevel() {
     lives = 3;
     greyRocksCollected = 0;
     isGameOver = false;
-    gameTime = 0; // Reset game time
-    rockSpawnInterval = 5.0; // Reset to 5 second pause
-    volcanoShaking = false; // Stop any shaking
+    isBridgeSequence = false;
+    isLevelTransition = false;
+    gameTime = 0;
+    rockSpawnInterval = 5.0;
+    volcanoShaking = false;
     shakeTimer = 0;
-    volcano.position = originalVolcanoPosition.clone(); // Reset volcano position
+    volcano.position = originalVolcanoPosition.clone();
+    
+    // Update level-based difficulty
+    maxRocks = 2 + currentLevel; // Level 1: 3 rocks, Level 2: 4 rocks, etc.
+    rocksNeededForBridge = 2 + currentLevel; // Level 1: 3 needed, Level 2: 4 needed, etc.
     
     // Reset group firing variables
     isFiringGroup = false;
@@ -290,9 +546,29 @@ class VolcanoGame extends FlameGame with HasCollisionDetection {
     groupFireTimer = 0;
     completedCycles = 0;
     
+    // Reset truck
+    truck.isControlled = true;
+    truck.scale = Vector2.all(1.0);
+    truck.pathAngle = 0;
+    truck.opacity = 1.0;
+    
+    // Reset island
+    island.sprite = Sprite(images.fromCache('island2.png'));
+    island.opacity = 1.0;
+    
     children.whereType<Rock>().toList().forEach((rock) => rock.removeFromParent());
     children.whereType<_GameOverText>().toList().forEach((text) => text.removeFromParent());
-    children.whereType<_LevelCompleteText>().toList().forEach((text) => text.removeFromParent());
+    children.whereType<_LevelText>().toList().forEach((text) => text.removeFromParent());
+    
+    // Add new level text
+    add(_LevelText(currentLevel));
+  }
+
+  void restartGame() {
+    currentLevel = 1;
+    rumblePlaying = false; // Stop current rumble
+    _restartForNextLevel();
+    _startRumbleLoop(); // Restart rumble for new game
   }
   
 }
@@ -336,7 +612,7 @@ class _GameHUD extends Component {
     
     final game = findGame()! as VolcanoGame;
     livesText.text = 'Lives: ${game.lives}';
-    rocksText.text = 'Rocks: ${game.greyRocksCollected}/10';
+    rocksText.text = 'Rocks: ${game.greyRocksCollected}/${game.rocksNeededForBridge}';
   }
 }
 
@@ -363,18 +639,21 @@ class _GameOverText extends TextComponent {
   }
 }
 
-class _LevelCompleteText extends TextComponent {
-  _LevelCompleteText() : super(
-    text: 'Level Complete!\nBridge Built!',
+class _LevelText extends TextComponent {
+  final int level;
+  double displayTimer = 0.0;
+  
+  _LevelText(this.level) : super(
+    text: 'Level $level',
     textRenderer: TextPaint(
       style: const TextStyle(
-        color: Colors.green,
-        fontSize: 32,
+        color: Colors.red,
+        fontSize: 48,
         fontWeight: FontWeight.bold,
       ),
     ),
   ) {
-    priority = 100; // Very high priority to be at front
+    priority = 1001; // Very high priority to be at front
   }
   
   @override
@@ -383,6 +662,17 @@ class _LevelCompleteText extends TextComponent {
       (findGame()! as VolcanoGame).size.x / 2 - size.x / 2,
       (findGame()! as VolcanoGame).size.y / 2 - size.y / 2,
     );
+  }
+  
+  @override
+  void update(double dt) {
+    super.update(dt);
+    displayTimer += dt;
+    
+    // Remove after 2 seconds
+    if (displayTimer >= 2.0) {
+      removeFromParent();
+    }
   }
 }
 

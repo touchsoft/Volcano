@@ -91,6 +91,9 @@ class ControlBar extends RectangleComponent with DragCallbacks, HasGameRef<Volca
   
   @override
   bool onDragStart(DragStartEvent event) {
+    // Don't allow control if truck is not controlled
+    if (!gameRef.truck.isControlled) return false;
+    
     isDragging = true;
     return true;
   }

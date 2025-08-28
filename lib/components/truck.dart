@@ -12,6 +12,7 @@ class Truck extends SpriteComponent with CollisionCallbacks {
   double pathAngle = 0; // Position on the oval path
   double speed = 1.0;
   int direction = 1; // 1 for clockwise, -1 for counter-clockwise
+  bool isControlled = true; // Whether player controls are active
   
   static const double minSpeed = 0.5;
   static const double maxSpeed = 3.0;
@@ -37,22 +38,26 @@ class Truck extends SpriteComponent with CollisionCallbacks {
   void update(double dt) {
     super.update(dt);
     
-    final previousPathAngle = pathAngle;
-    pathAngle += speed * direction * dt;
-    
-    if (pathAngle > 2 * pi) pathAngle -= 2 * pi;
-    if (pathAngle < 0) pathAngle += 2 * pi;
-    
-    _updatePosition();
-    _updateRotation(previousPathAngle);
-    
-    // Debug: Let's see what angle we actually have
-    final debugAngle = (angle * 180 / pi) % 360;
-    
-    _updateSprite();
-    
-    // Don't apply angle rotation - sprites are already pre-rotated
-    angle = 0;
+    // Only follow oval path if controlled by player
+    if (isControlled) {
+      final previousPathAngle = pathAngle;
+      pathAngle += speed * direction * dt;
+      
+      if (pathAngle > 2 * pi) pathAngle -= 2 * pi;
+      if (pathAngle < 0) pathAngle += 2 * pi;
+      
+      _updatePosition();
+      _updateRotation(previousPathAngle);
+      
+      // Debug: Let's see what angle we actually have
+      final debugAngle = (angle * 180 / pi) % 360;
+      
+      _updateSprite();
+      
+      // Don't apply angle rotation - sprites are already pre-rotated
+      angle = 0;
+    }
+    // When not controlled, position is managed by the game's bridge sequence
   }
   
   void _updatePosition() {
@@ -105,6 +110,10 @@ class Truck extends SpriteComponent with CollisionCallbacks {
   
   void decreaseSpeed() {
     speed = (speed - 0.2).clamp(minSpeed, maxSpeed);
+  }
+  
+  void updateSpriteForAngle() {
+    _updateSprite();
   }
   
   void _updateSprite() {
