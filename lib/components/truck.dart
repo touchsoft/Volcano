@@ -10,16 +10,24 @@ class Truck extends SpriteComponent with CollisionCallbacks {
   final double gameHeight;
   
   double pathAngle = 0; // Position on the oval path
-  double speed = 1.0;
+  double speed = 0.0; // Start at zero speed
   int direction = 1; // 1 for clockwise, -1 for counter-clockwise
   bool isControlled = true; // Whether player controls are active
   
-  static const double minSpeed = 0.5;
-  static const double maxSpeed = 3.0;
+  // New acceleration system with momentum
+  bool isAccelerating = false;
+  bool isBraking = false;
+  double momentum = 0.0; // Current momentum (0.0 to 1.0)
+  static const double maxSpeed = 2.09; // 1/3 of loop per second (2π/3 ≈ 2.09 rad/s)
+  static const double accelerationRate = 1.0 / 1.5; // Rate to reach max momentum per second (faster)
+  static const double decelerationRate = 1.0 / 2.0; // Rate to lose momentum per second (faster)
+  static const double brakeRate = 1.0 / 1.0; // Faster braking rate (1 second to stop)
   static const double ovalWidth = 160.0;  // Half width of the blue oval path (slightly reduced)
   static const double ovalHeight = 50.0;  // Half height of the blue oval path (further reduced)
   static const double minScale = 0.6;     // Smallest size when at top
   static const double maxScale = 0.9;     // Largest size when at bottom
+  
+  
   
   Truck({required this.gameWidth, required this.gameHeight});
   
@@ -40,6 +48,8 @@ class Truck extends SpriteComponent with CollisionCallbacks {
     
     // Only follow oval path if controlled by player
     if (isControlled) {
+      _updateSpeed(dt);
+      
       final previousPathAngle = pathAngle;
       pathAngle += speed * direction * dt;
       
@@ -48,6 +58,7 @@ class Truck extends SpriteComponent with CollisionCallbacks {
       
       _updatePosition();
       _updateRotation(previousPathAngle);
+      
       
       // Debug: Let's see what angle we actually have
       final debugAngle = (angle * 180 / pi) % 360;
@@ -104,12 +115,50 @@ class Truck extends SpriteComponent with CollisionCallbacks {
     angle = tangentAngle;
   }
   
-  void increaseSpeed() {
-    speed = (speed + 0.2).clamp(minSpeed, maxSpeed);
+  void startAccelerating() {
+    isAccelerating = true;
   }
   
-  void decreaseSpeed() {
-    speed = (speed - 0.2).clamp(minSpeed, maxSpeed);
+  void stopAccelerating() {
+    isAccelerating = false;
+  }
+  
+  void startBraking() {
+    isBraking = true;
+  }
+  
+  void stopBraking() {
+    isBraking = false;
+  }
+  
+  void changeDirection() {
+    direction *= -1; // Toggle between 1 and -1
+  }
+  
+  void _updateSpeed(double dt) {
+    // Check if both accelerate and brake are pressed (cancel each other out)
+    if (isAccelerating && isBraking) {
+      // Do nothing - inputs cancel each other out
+      return;
+    }
+    
+    if (isAccelerating) {
+      // Accelerating - increase momentum, taking current momentum into account
+      momentum += accelerationRate * dt;
+      momentum = momentum.clamp(0.0, 1.0);
+    } else if (isBraking) {
+      // Braking - decrease momentum faster than natural deceleration
+      momentum -= brakeRate * dt;
+      momentum = momentum.clamp(0.0, 1.0);
+    } else {
+      // Natural deceleration when neither button is pressed
+      momentum -= decelerationRate * dt;
+      momentum = momentum.clamp(0.0, 1.0);
+    }
+    
+    // Convert momentum to actual speed
+    speed = maxSpeed * momentum;
+    if (speed < 0.01) speed = 0.0; // Snap to zero at very low speeds
   }
   
   void updateSpriteForAngle() {
@@ -148,4 +197,5 @@ class Truck extends SpriteComponent with CollisionCallbacks {
     
     sprite = Sprite(game.images.fromCache(spriteFile));
   }
+  
 }

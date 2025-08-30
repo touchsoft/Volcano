@@ -8,16 +8,19 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'components/truck.dart';
 import 'components/rock.dart';
-import 'components/input_handler.dart';
-import 'components/control_bar.dart';
+import 'components/tap_to_restart.dart';
 import 'components/particle_explosion.dart';
 import 'components/volcano_smoke.dart';
 import 'components/volcano_lava.dart';
+import 'components/health_bar.dart';
+import 'components/rock_indicator.dart';
+import 'components/toolbox.dart';
+import 'components/score_display.dart';
 
 // Bridge animation phases
 enum BridgePhase { driving_to_bridge, fading_islands, crossing_bridge, completed }
 
-class VolcanoGame extends FlameGame with HasCollisionDetection {
+class VolcanoGame extends FlameGame with HasCollisionDetection, HasKeyboardHandlerComponents {
   static const double gameWidth = 480.0;
   static const double gameHeight = 720.0;
   
@@ -26,6 +29,9 @@ class VolcanoGame extends FlameGame with HasCollisionDetection {
   late SpriteComponent volcano;
   late VolcanoSmoke volcanoSmoke;
   late VolcanoLava volcanoLava;
+  late HealthBar healthBar;
+  late RockIndicator rockIndicator;
+  late ScoreDisplay scoreDisplay;
   
   double rockSpawnTimer = 0;
   double rockSpawnInterval = 5.0; // Start with 5 second pause between groups
@@ -50,12 +56,15 @@ class VolcanoGame extends FlameGame with HasCollisionDetection {
   Vector2 originalCameraPosition = Vector2.zero();
   
   int lives = 3;
+  double health = 1.0; // Health as percentage (1.0 = 100%, 0.0 = 0%)
   int greyRocksCollected = 0;
+  int score = 0;
   int rocksNeededForBridge = 3; // Dynamic rocks needed based on level
   
   bool isGameOver = false;
   bool isBridgeSequence = false;
   bool isLevelTransition = false;
+  bool isHealthBonus = false;
   double bridgeAnimationTimer = 0.0;
   double levelTransitionTimer = 0.0;
   int currentLevel = 1;
@@ -65,6 +74,21 @@ class VolcanoGame extends FlameGame with HasCollisionDetection {
   
   // Background music management
   bool rumblePlaying = false;
+  
+  // Toolbox system
+  bool canSpawnToolbox = true;
+  double toolboxCooldownTimer = 0.0;
+  static const double toolboxCooldown = 20.0; // 20 seconds cooldown
+  bool hasSpawnedToolboxThisLowHealth = false;
+  
+  // Health bonus animation variables
+  double healthBonusTimer = 0.0;
+  double healthForBonus = 0.0;
+  int beepCount = 0;
+  
+  // Keyboard handling
+  final Set<LogicalKeyboardKey> _pressedKeys = <LogicalKeyboardKey>{};
+  final Set<LogicalKeyboardKey> _pressedBrakeKeys = <LogicalKeyboardKey>{};
   
   @override
   Color backgroundColor() => const Color(0xFF87CEEB);
@@ -140,6 +164,7 @@ class VolcanoGame extends FlameGame with HasCollisionDetection {
       'truck-315.png',
       'rock-grey.png',
       'rock-red.png',
+      'toolbox.png',
     ]);
     
     // Load sound effects
@@ -149,6 +174,8 @@ class VolcanoGame extends FlameGame with HasCollisionDetection {
       FlameAudio.audioCache.load('crash3.mp3'),
       FlameAudio.audioCache.load('crash4.mp3'),
       FlameAudio.audioCache.load('rumble.mp3'),
+      FlameAudio.audioCache.load('collected.mp3'),
+      FlameAudio.audioCache.load('repair.mp3'),
     ]);
     
     // Start background rumble music loop
@@ -182,17 +209,24 @@ class VolcanoGame extends FlameGame with HasCollisionDetection {
     add(volcanoSmoke);
     
     truck = Truck(gameWidth: size.x, gameHeight: size.y);
+    // Position truck just above bridge initially
+    truck.pathAngle = pi / 2; // Bottom of oval
     add(truck);
     
-    add(_GameHUD());
+    healthBar = HealthBar();
+    add(healthBar);
+    
+    rockIndicator = RockIndicator();
+    add(rockIndicator);
+    
+    scoreDisplay = ScoreDisplay();
+    add(scoreDisplay);
+    
     add(_ControlsHUD());
     
-    final inputHandler = InputHandler()
-      ..size = Vector2(gameWidth, gameHeight)
-      ..paint.color = const Color(0x00000000); // Transparent
-    add(inputHandler);
     
-    add(ControlBar());
+    // Add tap to restart handler
+    add(TapToRestart());
     
     // Show initial level text
     add(_LevelText(currentLevel));
@@ -214,11 +248,19 @@ class VolcanoGame extends FlameGame with HasCollisionDetection {
       return;
     }
     
+    // Handle health bonus animation
+    if (isHealthBonus) {
+      _updateHealthBonus(dt);
+      return;
+    }
+    
     // Handle bridge sequence
     if (isBridgeSequence) {
       _updateBridgeSequence(dt);
       return;
     }
+    
+    _handleKeyboardInput();
     
     gameTime += dt;
     
@@ -285,11 +327,14 @@ class VolcanoGame extends FlameGame with HasCollisionDetection {
       }
     }
     
-    if (lives <= 0) {
+    if (health <= 0.0) {
       _gameOver();
-    } else if (greyRocksCollected >= rocksNeededForBridge && !isBridgeSequence) {
-      _startBridgeSequence();
     }
+    
+    // Handle toolbox spawning and cooldown
+    _updateToolboxSystem(dt);
+    
+    // Note: Bridge sequence is now triggered by rock collection completion, not here
   }
   
   void _startVolcanoShake() {
@@ -305,11 +350,39 @@ class VolcanoGame extends FlameGame with HasCollisionDetection {
   
   void _spawnRock() {
     final isGrey = random.nextBool();
+    RockSize rockSize = RockSize.medium;
+    double damagePercent = 0.0;
+    
+    // For red rocks, randomly assign size and damage
+    if (!isGrey) {
+      final sizeIndex = random.nextInt(4);
+      switch (sizeIndex) {
+        case 0:
+          rockSize = RockSize.small;
+          damagePercent = 0.10; // 10% damage
+          break;
+        case 1:
+          rockSize = RockSize.medium;
+          damagePercent = 0.20; // 20% damage
+          break;
+        case 2:
+          rockSize = RockSize.large;
+          damagePercent = 0.25; // 25% damage
+          break;
+        case 3:
+          rockSize = RockSize.xlarge;
+          damagePercent = 0.33; // 33% damage
+          break;
+      }
+    }
+    
     final rock = Rock(
       isGrey: isGrey,
       startPosition: Vector2(size.x / 2, size.y / 2 - 85), // Volcano mouth (top of volcano)
       gameWidth: size.x,
       gameHeight: size.y,
+      rockSize: rockSize,
+      damagePercent: damagePercent,
     );
     add(rock);
     
@@ -321,14 +394,34 @@ class VolcanoGame extends FlameGame with HasCollisionDetection {
     add(volcanoMouthExplosion);
   }
   
-  void collectRock(bool isGrey) {
+  void collectRock(bool isGrey, {double damagePercent = 0.0}) {
     if (isGrey) {
-      greyRocksCollected++;
-    } else {
-      lives--;
+      // Play collection sound
+      FlameAudio.play('collected.mp3');
       
-      // Check if this is the last life
-      if (lives <= 0) {
+      // Check if this will be the final rock for the level
+      final isLevelCompleteRock = (greyRocksCollected + 1) >= rocksNeededForBridge;
+      
+      // Trigger rock collection animation and increment counter when animation completes
+      rockIndicator.triggerRockCollectionAnimation(greyRocksCollected, () {
+        greyRocksCollected++;
+        score += 100; // Award 100 points per grey rock
+        
+        // If this was the final rock, start bridge sequence
+        if (isLevelCompleteRock && !isBridgeSequence) {
+          _startBridgeSequence();
+        }
+      });
+    } else {
+      // Apply percentage-based damage
+      health -= damagePercent;
+      health = health.clamp(0.0, 1.0);
+      
+      // Update lives based on health (for backwards compatibility)
+      lives = (health * 3).ceil().clamp(0, 3);
+      
+      // Check if health is depleted
+      if (health <= 0.0) {
         // Create large explosion at truck position
         final largeExplosion = ParticleExplosion(
           position: truck.position.clone(),
@@ -341,6 +434,9 @@ class VolcanoGame extends FlameGame with HasCollisionDetection {
         
         // Start screen shake
         _startGameOverShake();
+        
+        // Trigger game over
+        _gameOver();
       }
     }
   }
@@ -373,7 +469,7 @@ class VolcanoGame extends FlameGame with HasCollisionDetection {
         _updateCrossingBridge(dt);
         break;
       case BridgePhase.completed:
-        _startLevelTransition();
+        _startHealthBonus();
         break;
     }
   }
@@ -484,8 +580,43 @@ class VolcanoGame extends FlameGame with HasCollisionDetection {
     }
   }
   
-  void _startLevelTransition() {
+  void _startHealthBonus() {
     isBridgeSequence = false;
+    isHealthBonus = true;
+    healthBonusTimer = 0.0;
+    healthForBonus = health; // Store the health to convert to points
+    beepCount = 0;
+  }
+  
+  void _updateHealthBonus(double dt) {
+    healthBonusTimer += dt;
+    
+    // Each step takes 3s / 100 = 0.03s (for max 3 seconds total)
+    const stepDuration = 0.03;
+    
+    if (healthBonusTimer >= stepDuration && healthForBonus > 0.0) {
+      // Reduce health by 1% and add 5 points
+      healthForBonus -= 0.01;
+      healthForBonus = healthForBonus.clamp(0.0, 1.0);
+      score += 5;
+      
+      // Play beep with rising tone
+      _playHealthBonusBeep();
+      
+      healthBonusTimer = 0.0;
+      beepCount++;
+    }
+    
+    // When health is fully depleted or 3 seconds have passed
+    if (healthForBonus <= 0.0 || beepCount * stepDuration >= 3.0) {
+      // Set actual health to 0 after bonus completes - don't reset it
+      health = 0.0;
+      _startLevelTransition();
+    }
+  }
+  
+  void _startLevelTransition() {
+    isHealthBonus = false;
     isLevelTransition = true;
     levelTransitionTimer = 0.0;
     showingLevelText = false;
@@ -511,6 +642,59 @@ class VolcanoGame extends FlameGame with HasCollisionDetection {
     final soundIndex = random.nextInt(4) + 1; // 1-4
     FlameAudio.play('crash$soundIndex.mp3');
   }
+  
+  void playRepairSound() {
+    FlameAudio.play('repair.mp3');
+  }
+  
+  void _playHealthBonusBeep() {
+    // Create a simple beep sound with rising tone
+    // The tone rises based on how much health has been converted
+    final toneStep = (health - healthForBonus) * 100; // 0-100 based on progress
+    print('Health bonus beep: ${toneStep.toInt()}% complete');
+    // TODO: Add actual beep sound with varying pitch when available
+  }
+  
+  void _updateToolboxSystem(double dt) {
+    // Update cooldown timer
+    if (!canSpawnToolbox) {
+      toolboxCooldownTimer += dt;
+      if (toolboxCooldownTimer >= toolboxCooldown) {
+        canSpawnToolbox = true;
+        toolboxCooldownTimer = 0.0;
+        hasSpawnedToolboxThisLowHealth = false;
+      }
+    }
+    
+    // Check if we should spawn a toolbox
+    if (canSpawnToolbox && health < 0.5 && !hasSpawnedToolboxThisLowHealth) {
+      // Only spawn if no toolbox currently exists
+      final existingToolbox = children.whereType<Toolbox>().isEmpty;
+      if (existingToolbox) {
+        print('Spawning toolbox! Health: ${(health * 100).round()}%');
+        _spawnToolbox();
+        hasSpawnedToolboxThisLowHealth = true;
+      } else {
+        print('Toolbox already exists, not spawning another');
+      }
+    }
+    
+    // Reset flag if health goes above 50%
+    if (health >= 0.5) {
+      hasSpawnedToolboxThisLowHealth = false;
+    }
+  }
+  
+  void _spawnToolbox() {
+    if (!canSpawnToolbox) return;
+    
+    final toolbox = Toolbox();
+    add(toolbox);
+    
+    // Start cooldown
+    canSpawnToolbox = false;
+    toolboxCooldownTimer = 0.0;
+  }
 
   void _startRumbleLoop() async {
     if (!rumblePlaying) {
@@ -522,9 +706,56 @@ class VolcanoGame extends FlameGame with HasCollisionDetection {
       }
     }
   }
+  
+  @override
+  KeyEventResult onKeyEvent(KeyEvent event, Set<LogicalKeyboardKey> keysPressed) {
+    // Only handle keyboard input if truck is controlled
+    if (!truck.isControlled) return KeyEventResult.ignored;
+    
+    // Handle spacebar for direction change (only on key down to prevent rapid toggling)
+    if (event is KeyDownEvent && event.logicalKey == LogicalKeyboardKey.space) {
+      truck.changeDirection();
+      return KeyEventResult.handled;
+    }
+    
+    return KeyEventResult.ignored;
+  }
+  
+  
+  void _handleKeyboardInput() {
+    // Only handle keyboard input if truck is controlled
+    if (!truck.isControlled) return;
+    
+    // Check for up arrow key (accelerate)
+    if (HardwareKeyboard.instance.isLogicalKeyPressed(LogicalKeyboardKey.arrowUp)) {
+      if (!_pressedKeys.contains(LogicalKeyboardKey.arrowUp)) {
+        truck.startAccelerating();
+        _pressedKeys.add(LogicalKeyboardKey.arrowUp);
+      }
+    } else {
+      if (_pressedKeys.contains(LogicalKeyboardKey.arrowUp)) {
+        truck.stopAccelerating();
+        _pressedKeys.remove(LogicalKeyboardKey.arrowUp);
+      }
+    }
+    
+    // Check for down arrow key (brake)
+    if (HardwareKeyboard.instance.isLogicalKeyPressed(LogicalKeyboardKey.arrowDown)) {
+      if (!_pressedBrakeKeys.contains(LogicalKeyboardKey.arrowDown)) {
+        truck.startBraking();
+        _pressedBrakeKeys.add(LogicalKeyboardKey.arrowDown);
+      }
+    } else {
+      if (_pressedBrakeKeys.contains(LogicalKeyboardKey.arrowDown)) {
+        truck.stopBraking();
+        _pressedBrakeKeys.remove(LogicalKeyboardKey.arrowDown);
+      }
+    }
+  }
 
   void _restartForNextLevel() {
     lives = 3;
+    health = 1.0; // Reset health to 100%
     greyRocksCollected = 0;
     isGameOver = false;
     isBridgeSequence = false;
@@ -549,14 +780,29 @@ class VolcanoGame extends FlameGame with HasCollisionDetection {
     // Reset truck
     truck.isControlled = true;
     truck.scale = Vector2.all(1.0);
-    truck.pathAngle = 0;
     truck.opacity = 1.0;
+    
+    // Position truck just above bridge (bottom center of oval)
+    truck.pathAngle = pi / 2; // Bottom of oval (90 degrees)
+    truck.speed = 0.0; // Start at zero speed
+    truck.momentum = 0.0; // Start with zero momentum
+    truck.isAccelerating = false;
+    truck.isBraking = false;
     
     // Reset island
     island.sprite = Sprite(images.fromCache('island2.png'));
     island.opacity = 1.0;
     
+    // Reset rock indicator
+    rockIndicator.resetForNewLevel();
+    
+    // Reset toolbox system
+    canSpawnToolbox = true;
+    toolboxCooldownTimer = 0.0;
+    hasSpawnedToolboxThisLowHealth = false;
+    
     children.whereType<Rock>().toList().forEach((rock) => rock.removeFromParent());
+    children.whereType<Toolbox>().toList().forEach((toolbox) => toolbox.removeFromParent());
     children.whereType<_GameOverText>().toList().forEach((text) => text.removeFromParent());
     children.whereType<_LevelText>().toList().forEach((text) => text.removeFromParent());
     
@@ -566,6 +812,7 @@ class VolcanoGame extends FlameGame with HasCollisionDetection {
 
   void restartGame() {
     currentLevel = 1;
+    score = 0; // Reset score when restarting game
     rumblePlaying = false; // Stop current rumble
     _restartForNextLevel();
     _startRumbleLoop(); // Restart rumble for new game
@@ -573,48 +820,6 @@ class VolcanoGame extends FlameGame with HasCollisionDetection {
   
 }
 
-class _GameHUD extends Component {
-  late TextComponent livesText;
-  late TextComponent rocksText;
-  
-  @override
-  Future<void> onLoad() async {
-    livesText = TextComponent(
-      text: 'Lives: 3',
-      textRenderer: TextPaint(
-        style: const TextStyle(
-          color: Colors.white,
-          fontSize: 20,
-          fontWeight: FontWeight.bold,
-        ),
-      ),
-      position: Vector2(20, 20),
-    );
-    add(livesText);
-    
-    rocksText = TextComponent(
-      text: 'Rocks: 0/10',
-      textRenderer: TextPaint(
-        style: const TextStyle(
-          color: Colors.white,
-          fontSize: 20,
-          fontWeight: FontWeight.bold,
-        ),
-      ),
-      position: Vector2(20, 50),
-    );
-    add(rocksText);
-  }
-  
-  @override
-  void update(double dt) {
-    super.update(dt);
-    
-    final game = findGame()! as VolcanoGame;
-    livesText.text = 'Lives: ${game.lives}';
-    rocksText.text = 'Rocks: ${game.greyRocksCollected}/${game.rocksNeededForBridge}';
-  }
-}
 
 class _GameOverText extends TextComponent {
   _GameOverText() : super(
@@ -682,7 +887,7 @@ class _ControlsHUD extends Component {
   @override
   Future<void> onLoad() async {
     controlsText = TextComponent(
-      text: 'Drag the control bar to steer and accelerate\nCollect grey rocks, avoid red ones!',
+      text: 'A = Accelerate, B = Brake, D = Direction (or ↑/↓/Space)\nCollect grey rocks, avoid red ones!',
       textRenderer: TextPaint(
         style: const TextStyle(
           color: Colors.white70,

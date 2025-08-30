@@ -6,10 +6,14 @@ import '../volcano_game.dart';
 import 'truck.dart';
 import 'particle_explosion.dart';
 
+enum RockSize { small, medium, large, xlarge }
+
 class Rock extends SpriteComponent with CollisionCallbacks {
   final bool isGrey;
   final double gameWidth;
   final double gameHeight;
+  final RockSize rockSize;
+  final double damagePercent;
   
   late Vector2 velocity;
   late Vector2 startPosition;
@@ -25,7 +29,7 @@ class Rock extends SpriteComponent with CollisionCallbacks {
   bool isSpecialRed = false;
   bool hasLanded = false;
   double landTime = 0.0;
-  double initialSize = 20.0;
+  late double initialSize;
   
   static const double ovalWidth = 140.0;
   static const double ovalHeight = 80.0;
@@ -35,13 +39,36 @@ class Rock extends SpriteComponent with CollisionCallbacks {
     required Vector2 startPosition,
     required this.gameWidth,
     required this.gameHeight,
+    this.rockSize = RockSize.medium,
+    this.damagePercent = 0.0,
   }) : this.startPosition = startPosition;
   
   @override
   Future<void> onLoad() async {
     final game = findGame()! as VolcanoGame;
     sprite = Sprite(game.images.fromCache(isGrey ? 'rock-grey.png' : 'rock-red.png'));
-    size = Vector2(20, 20); // All rocks start same size
+    
+    // Set size based on rock size enum
+    final baseSize = 20.0;
+    double sizeMultiplier;
+    switch (rockSize) {
+      case RockSize.small:
+        sizeMultiplier = 2.0 / 3.0; // 2/3 size (about 13.3px)
+        break;
+      case RockSize.medium:
+        sizeMultiplier = 1.0; // Same size (20px)
+        break;
+      case RockSize.large:
+        sizeMultiplier = 1.33; // 1.33x size (about 26.6px)
+        break;
+      case RockSize.xlarge:
+        sizeMultiplier = 1.66; // 1.66x size (about 33.2px)
+        break;
+    }
+    
+    final rockSizeValue = baseSize * sizeMultiplier;
+    size = Vector2(rockSizeValue, rockSizeValue);
+    initialSize = rockSizeValue;
     anchor = Anchor.center;
     
     add(RectangleHitbox());
@@ -51,6 +78,7 @@ class Rock extends SpriteComponent with CollisionCallbacks {
     
     // 1 in 5 red rocks are special (don't explode on landing)
     final random = Random();
+    // 1 in 5 red rocks are special (don't explode on landing, stay for a while)
     if (!isGrey && random.nextInt(5) == 0) {
       isSpecialRed = true;
     }
@@ -218,7 +246,7 @@ class Rock extends SpriteComponent with CollisionCallbacks {
         game.add(bigExplosion);
       }
       
-      game.collectRock(isGrey);
+      game.collectRock(isGrey, damagePercent: damagePercent);
       
       removeFromParent();
       return false;
