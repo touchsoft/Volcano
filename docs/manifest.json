@@ -1,13 +1,14 @@
 {
-    "name": "volcano",
-    "short_name": "volcano",
+    "name": "Volcano Truck Game",
+    "short_name": "Volcano",
     "start_url": ".",
     "display": "standalone",
-    "background_color": "#0175C2",
-    "theme_color": "#0175C2",
-    "description": "A new Flutter project.",
-    "orientation": "portrait-primary",
+    "background_color": "#87CEEB",
+    "theme_color": "#FF4500",
+    "description": "Navigate your truck around a volcano, collect grey rocks and avoid the dangerous red ones!",
+    "orientation": "landscape-primary",
     "prefer_related_applications": false,
+    "categories": ["games", "arcade"],
     "icons": [
         {
             "src": "icons/Icon-192.png",
