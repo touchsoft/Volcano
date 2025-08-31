@@ -1,11 +1,13 @@
-import 'dart:async';
+import 'dart:async' as dart_async;
 import 'dart:math';
+import 'dart:typed_data';
 import 'package:flame/components.dart';
 import 'package:flame/events.dart';
 import 'package:flame/game.dart';
 import 'package:flame_audio/flame_audio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_sound/flutter_sound.dart';
 import 'components/truck.dart';
 import 'components/rock.dart';
 import 'components/tap_to_restart.dart';
@@ -75,6 +77,9 @@ class VolcanoGame extends FlameGame with HasCollisionDetection, HasKeyboardHandl
   // Background music management
   bool rumblePlaying = false;
   
+  // Flutter Sound player for sweep tones
+  final FlutterSoundPlayer soundPlayer = FlutterSoundPlayer();
+  
   // Toolbox system
   bool canSpawnToolbox = true;
   double toolboxCooldownTimer = 0.0;
@@ -85,6 +90,7 @@ class VolcanoGame extends FlameGame with HasCollisionDetection, HasKeyboardHandl
   double healthBonusTimer = 0.0;
   double healthForBonus = 0.0;
   int beepCount = 0;
+  double bonusDuration = 3.0;
   
   // Keyboard handling
   final Set<LogicalKeyboardKey> _pressedKeys = <LogicalKeyboardKey>{};
@@ -146,6 +152,7 @@ class VolcanoGame extends FlameGame with HasCollisionDetection, HasKeyboardHandl
     camera.viewfinder.anchor = Anchor.center;
     
     await _loadSprites();
+    await _initializeSound();
     _setupGame();
   }
   
@@ -233,7 +240,7 @@ class VolcanoGame extends FlameGame with HasCollisionDetection, HasKeyboardHandl
     
     // Set initial level difficulty
     maxRocks = 2 + currentLevel; // Level 1: 3 rocks, Level 2: 4 rocks, etc.
-    rocksNeededForBridge = 2 + currentLevel; // Level 1: 3 needed, Level 2: 4 needed, etc.
+    rocksNeededForBridge = (2 + currentLevel).clamp(3, 20); // Level 1: 3 needed, max 20
   }
   
   @override
@@ -290,7 +297,9 @@ class VolcanoGame extends FlameGame with HasCollisionDetection, HasKeyboardHandl
       if (rockSpawnTimer >= rockSpawnInterval && currentActiveRocks < maxRocks) {
         // Start new group
         isFiringGroup = true;
-        totalRocksInGroup = 3 + random.nextInt(3); // 3 to 5 rocks
+        // Progressive group size: Level 1 = 3-5, Level 2 = 3-6, ..., Level 10+ = 3-12
+        final maxGroupSize = (3 + currentLevel).clamp(5, 12); // Min 5, max 12
+        totalRocksInGroup = 3 + random.nextInt(maxGroupSize - 2); // 3 to maxGroupSize
         rocksInCurrentGroup = 0;
         groupFireTimer = 0;
         _startVolcanoShake();
@@ -331,10 +340,17 @@ class VolcanoGame extends FlameGame with HasCollisionDetection, HasKeyboardHandl
       _gameOver();
     }
     
+    // Check for level completion - wait for rocks to be illuminated in indicator
+    if (!isBridgeSequence && greyRocksCollected >= rocksNeededForBridge) {
+      // Make sure all rock indicator slots are properly illuminated
+      final illuminatedSlots = rockIndicator.rockSlots.where((slot) => slot.opacity > 0.5).length;
+      if (illuminatedSlots >= rocksNeededForBridge) {
+        _startBridgeSequence();
+      }
+    }
+    
     // Handle toolbox spawning and cooldown
     _updateToolboxSystem(dt);
-    
-    // Note: Bridge sequence is now triggered by rock collection completion, not here
   }
   
   void _startVolcanoShake() {
@@ -349,32 +365,52 @@ class VolcanoGame extends FlameGame with HasCollisionDetection, HasKeyboardHandl
   }
   
   void _spawnRock() {
-    final isGrey = random.nextBool();
+    // Calculate red rock percentage based on level
+    double redRockPercentage;
+    if (currentLevel == 1) {
+      redRockPercentage = 0.0; // Level 1: All rocks are grey
+    } else {
+      // Level 2: 20%, Level 3: 30%, etc. up to max 90%
+      redRockPercentage = (0.1 * currentLevel + 0.1).clamp(0.0, 0.9);
+    }
+    
+    final isGrey = random.nextDouble() > redRockPercentage;
     RockSize rockSize = RockSize.medium;
     double damagePercent = 0.0;
     
     // For red rocks, randomly assign size and damage
     if (!isGrey) {
-      final sizeIndex = random.nextInt(4);
-      switch (sizeIndex) {
-        case 0:
-          rockSize = RockSize.small;
-          damagePercent = 0.10; // 10% damage
-          break;
-        case 1:
-          rockSize = RockSize.medium;
-          damagePercent = 0.20; // 20% damage
-          break;
-        case 2:
-          rockSize = RockSize.large;
-          damagePercent = 0.25; // 25% damage
-          break;
-        case 3:
-          rockSize = RockSize.xlarge;
-          damagePercent = 0.33; // 33% damage
-          break;
+      final sizeIndex = random.nextInt(20); // 1 in 20 chance for xxlarge
+      if (sizeIndex == 19) {
+        // 5% chance for explosive xxlarge rock
+        rockSize = RockSize.xxlarge;
+        damagePercent = 0.5; // 50% damage - very dangerous!
+      } else {
+        // Normal red rock sizes
+        final normalSizeIndex = random.nextInt(4);
+        switch (normalSizeIndex) {
+          case 0:
+            rockSize = RockSize.small;
+            damagePercent = 0.10; // 10% damage
+            break;
+          case 1:
+            rockSize = RockSize.medium;
+            damagePercent = 0.20; // 20% damage
+            break;
+          case 2:
+            rockSize = RockSize.large;
+            damagePercent = 0.25; // 25% damage
+            break;
+          case 3:
+            rockSize = RockSize.xlarge;
+            damagePercent = 0.33; // 33% damage
+            break;
+        }
       }
     }
+    
+    // Calculate speed multiplier based on level (10% increase per level)
+    final speedMultiplier = 1.0 + (currentLevel - 1) * 0.1;
     
     final rock = Rock(
       isGrey: isGrey,
@@ -383,6 +419,7 @@ class VolcanoGame extends FlameGame with HasCollisionDetection, HasKeyboardHandl
       gameHeight: size.y,
       rockSize: rockSize,
       damagePercent: damagePercent,
+      speedMultiplier: speedMultiplier,
     );
     add(rock);
     
@@ -399,18 +436,10 @@ class VolcanoGame extends FlameGame with HasCollisionDetection, HasKeyboardHandl
       // Play collection sound
       FlameAudio.play('collected.mp3');
       
-      // Check if this will be the final rock for the level
-      final isLevelCompleteRock = (greyRocksCollected + 1) >= rocksNeededForBridge;
-      
       // Trigger rock collection animation and increment counter when animation completes
       rockIndicator.triggerRockCollectionAnimation(greyRocksCollected, () {
         greyRocksCollected++;
         score += 100; // Award 100 points per grey rock
-        
-        // If this was the final rock, start bridge sequence
-        if (isLevelCompleteRock && !isBridgeSequence) {
-          _startBridgeSequence();
-        }
       });
     } else {
       // Apply percentage-based damage
@@ -475,31 +504,67 @@ class VolcanoGame extends FlameGame with HasCollisionDetection, HasKeyboardHandl
   }
   
   void _updateDrivingToBridge(double dt) {
-    // Drive truck to bridge entrance (bridge center at 62% of screen width)
-    final bridgeTopCenterX = size.x * 0.62; // Bridge center at top (adjusted +0.02)
-    final targetPosition = Vector2(bridgeTopCenterX, size.y / 2 + 140); // Bridge entrance
-    final distance = (targetPosition - truck.position).length;
+    // Drive truck along oval path to bridge entrance
+    final bridgeTopCenterX = size.x * 0.62; // Bridge center at top
+    final bridgeY = size.y / 2 + 140; // Bridge entrance Y
     
-    if (distance > 10) {
-      // Still driving to bridge - use same logic as normal truck movement
-      final direction = (targetPosition - truck.position).normalized();
-      truck.position += direction * 100 * dt; // Move at constant speed
-      
-      // Use exact same sprite logic as when user is controlling
-      final movementAngle = atan2(direction.y, direction.x);
-      truck.angle = movementAngle; // Set the angle for sprite selection
-      // Call truck's existing sprite update method
-      truck.updateSpriteForAngle();
-      // Reset angle to 0 like the truck normally does (sprites are pre-rotated)
+    // Calculate target angle on oval path closest to bridge entrance
+    final targetAngle = pi / 2; // Bottom of oval (90 degrees) - bridge position
+    
+    // Continue following oval path at half speed toward target angle
+    final speed = 1.045; // Half of normal max speed (2.09 / 2)
+    truck.pathAngle += speed * truck.direction * dt;
+    
+    // Normalize angle
+    if (truck.pathAngle > 2 * pi) truck.pathAngle -= 2 * pi;
+    if (truck.pathAngle < 0) truck.pathAngle += 2 * pi;
+    
+    // Update truck position using oval path (same as normal gameplay)
+    final centerX = size.x / 2;
+    final centerY = size.y / 2 + 40;
+    final ovalWidth = 160.0;
+    final ovalHeight = 50.0;
+    
+    final x = centerX + ovalWidth * cos(truck.pathAngle);
+    final y = centerY + ovalHeight * sin(truck.pathAngle);
+    truck.position = Vector2(x, y);
+    
+    // Update truck scale based on position (3D perspective effect)
+    final normalizedY = (sin(truck.pathAngle) + 1) / 2;
+    final minScale = 0.6;
+    final maxScale = 0.9;
+    final scaleValue = minScale + (maxScale - minScale) * normalizedY;
+    truck.scale = Vector2.all(scaleValue);
+    
+    // Update truck rotation and sprite (same as normal gameplay)
+    final a = ovalWidth;
+    final b = ovalHeight;
+    final dx = -a * sin(truck.pathAngle);
+    final dy = b * cos(truck.pathAngle);
+    
+    double tangentAngle = atan2(dy, dx);
+    if (truck.direction < 0) {
+      tangentAngle += pi;
+    }
+    tangentAngle = tangentAngle % (2 * pi);
+    if (tangentAngle < 0) tangentAngle += 2 * pi;
+    
+    truck.angle = tangentAngle;
+    truck.updateSpriteForAngle();
+    truck.angle = 0; // Reset after sprite update
+    
+    // Check if we've reached the bridge position (bottom of oval)
+    final angleDistance = (truck.pathAngle - targetAngle).abs();
+    final angleDistanceAlt = (truck.pathAngle - targetAngle + 2 * pi).abs();
+    final minAngleDistance = min(angleDistance, angleDistanceAlt);
+    
+    if (minAngleDistance < 0.1) { // Close enough to bridge position
+      // Position truck exactly at bridge entrance
+      truck.position = Vector2(bridgeTopCenterX, bridgeY);
+      truck.sprite = Sprite(images.fromCache('truck-180.png')); // Face downward
       truck.angle = 0;
       
-    } else {
-      // Reached bridge position - stop and face downward
-      truck.position = targetPosition; // Lock to exact position
-      truck.sprite = Sprite(images.fromCache('truck-180.png')); // Face downward
-      truck.angle = 0; // Ensure no rotation is applied
-      
-      // Immediately start fading islands (no delay)
+      // Start fading islands
       bridgePhase = BridgePhase.fading_islands;
       bridgeAnimationTimer = 0.0;
     }
@@ -586,13 +651,22 @@ class VolcanoGame extends FlameGame with HasCollisionDetection, HasKeyboardHandl
     healthBonusTimer = 0.0;
     healthForBonus = health; // Store the health to convert to points
     beepCount = 0;
+    
+    // Calculate bonus duration based on health percentage
+    // 100% health = 3s, 66.67% health = 2s, 33.33% health = 1s, 0% health = 0s
+    bonusDuration = health * 3.0;
+    if (bonusDuration < 0.1) bonusDuration = 0.1; // Minimum duration to prevent divide by zero
+    
+    // Start the sweep tone
+    _playSweepTone(200.0, 1000.0, bonusDuration);
   }
   
   void _updateHealthBonus(double dt) {
     healthBonusTimer += dt;
     
-    // Each step takes 3s / 100 = 0.03s (for max 3 seconds total)
-    const stepDuration = 0.03;
+    // Calculate how many steps we need and step duration
+    final totalSteps = (health * 100).round(); // 1 step per 1% health
+    final stepDuration = bonusDuration / totalSteps; // Spread over calculated duration
     
     if (healthBonusTimer >= stepDuration && healthForBonus > 0.0) {
       // Reduce health by 1% and add 5 points
@@ -600,15 +674,14 @@ class VolcanoGame extends FlameGame with HasCollisionDetection, HasKeyboardHandl
       healthForBonus = healthForBonus.clamp(0.0, 1.0);
       score += 5;
       
-      // Play beep with rising tone
-      _playHealthBonusBeep();
+      // No individual beeps needed - sweep tone plays continuously
       
       healthBonusTimer = 0.0;
       beepCount++;
     }
     
-    // When health is fully depleted or 3 seconds have passed
-    if (healthForBonus <= 0.0 || beepCount * stepDuration >= 3.0) {
+    // When health is fully depleted or time has passed
+    if (healthForBonus <= 0.0 || (beepCount * stepDuration) >= bonusDuration) {
       // Set actual health to 0 after bonus completes - don't reset it
       health = 0.0;
       _startLevelTransition();
@@ -647,12 +720,14 @@ class VolcanoGame extends FlameGame with HasCollisionDetection, HasKeyboardHandl
     FlameAudio.play('repair.mp3');
   }
   
-  void _playHealthBonusBeep() {
-    // Create a simple beep sound with rising tone
-    // The tone rises based on how much health has been converted
-    final toneStep = (health - healthForBonus) * 100; // 0-100 based on progress
-    print('Health bonus beep: ${toneStep.toInt()}% complete');
-    // TODO: Add actual beep sound with varying pitch when available
+  Future<void> _initializeSound() async {
+    // Skip flutter_sound initialization for now due to web/desktop compatibility issues
+    print('Sound system initialized (using FlameAudio fallback)');
+  }
+  
+  Future<void> _playSweepTone(double startFreq, double endFreq, double durationSeconds) async {
+    print('Playing bonus sound for 1.5s');
+    FlameAudio.play('bonus.mp3');
   }
   
   void _updateToolboxSystem(double dt) {

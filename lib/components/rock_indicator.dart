@@ -18,12 +18,15 @@ class RockIndicator extends PositionComponent with HasGameRef<VolcanoGame> {
     
     rockSlots = [];
     
-    // Create rock slots
+    // Create rock slots in 2 rows (max 10 per row)
     for (int i = 0; i < maxRocks; i++) {
+      final row = i < 10 ? 0 : 1; // First 10 in row 0, rest in row 1
+      final col = i < 10 ? i : i - 10; // Column position within the row
+      
       final rockSlot = SpriteComponent(
         sprite: Sprite(gameRef.images.fromCache('rock-grey.png')),
         size: Vector2(rockSize, rockSize),
-        position: Vector2(i * (rockSize + spacing), 0),
+        position: Vector2(col * (rockSize + spacing), row * (rockSize + spacing)),
         anchor: Anchor.topLeft,
       );
       
@@ -60,10 +63,13 @@ class RockIndicator extends PositionComponent with HasGameRef<VolcanoGame> {
     // Add new slots if needed
     while (rockSlots.length < newMax) {
       final index = rockSlots.length;
+      final row = index < 10 ? 0 : 1; // First 10 in row 0, rest in row 1
+      final col = index < 10 ? index : index - 10; // Column position within the row
+      
       final rockSlot = SpriteComponent(
         sprite: Sprite(gameRef.images.fromCache('rock-grey.png')),
         size: Vector2(rockSize, rockSize),
-        position: Vector2(index * (rockSize + spacing), 0),
+        position: Vector2(col * (rockSize + spacing), row * (rockSize + spacing)),
         anchor: Anchor.topLeft,
       );
       rockSlot.opacity = 0.2;

@@ -6,7 +6,7 @@ import '../volcano_game.dart';
 import 'truck.dart';
 import 'particle_explosion.dart';
 
-enum RockSize { small, medium, large, xlarge }
+enum RockSize { small, medium, large, xlarge, xxlarge }
 
 class Rock extends SpriteComponent with CollisionCallbacks {
   final bool isGrey;
@@ -31,8 +31,15 @@ class Rock extends SpriteComponent with CollisionCallbacks {
   double landTime = 0.0;
   late double initialSize;
   
+  // Explosive red rock mechanics
+  bool isExplosiveRed = false;
+  bool hasExploded = false;
+  double explosionTimer = 0.0;
+  
   static const double ovalWidth = 140.0;
   static const double ovalHeight = 80.0;
+  
+  final double speedMultiplier;
   
   Rock({
     required this.isGrey,
@@ -41,6 +48,7 @@ class Rock extends SpriteComponent with CollisionCallbacks {
     required this.gameHeight,
     this.rockSize = RockSize.medium,
     this.damagePercent = 0.0,
+    this.speedMultiplier = 1.0,
   }) : this.startPosition = startPosition;
   
   @override
@@ -64,6 +72,9 @@ class Rock extends SpriteComponent with CollisionCallbacks {
       case RockSize.xlarge:
         sizeMultiplier = 1.66; // 1.66x size (about 33.2px)
         break;
+      case RockSize.xxlarge:
+        sizeMultiplier = 2.0; // 2x size (40px) - explosive rock
+        break;
     }
     
     final rockSizeValue = baseSize * sizeMultiplier;
@@ -76,10 +87,14 @@ class Rock extends SpriteComponent with CollisionCallbacks {
     position = startPosition.clone();
     startTime = DateTime.now().millisecondsSinceEpoch / 1000.0;
     
-    // 1 in 5 red rocks are special (don't explode on landing)
     final random = Random();
-    // 1 in 5 red rocks are special (don't explode on landing, stay for a while)
-    if (!isGrey && random.nextInt(5) == 0) {
+    
+    // XXLarge rocks are always explosive red rocks
+    if (rockSize == RockSize.xxlarge) {
+      isExplosiveRed = true;
+      explosionTimer = 1.0 + random.nextDouble(); // Explode after 1-2 seconds in flight
+    } else if (!isGrey && random.nextInt(5) == 0) {
+      // 1 in 5 red rocks are special (don't explode on landing, stay for a while)
       isSpecialRed = true;
     }
     
@@ -107,8 +122,10 @@ class Rock extends SpriteComponent with CollisionCallbacks {
     
     final distance = Vector2(targetX - position.x, targetY - position.y);
     
-    final initialSpeed = 150.0 + random.nextDouble() * 100.0;
-    flightDuration = 1.5 + random.nextDouble() * 1.0;
+    final baseInitialSpeed = 150.0 + random.nextDouble() * 100.0;
+    final initialSpeed = baseInitialSpeed * speedMultiplier;
+    final baseDuration = 1.5 + random.nextDouble() * 1.0;
+    flightDuration = baseDuration / speedMultiplier; // Faster rocks have shorter flight time
     
     velocity = Vector2(
       distance.x / flightDuration,
@@ -138,6 +155,15 @@ class Rock extends SpriteComponent with CollisionCallbacks {
     final currentTime = DateTime.now().millisecondsSinceEpoch / 1000.0;
     final elapsedTime = currentTime - startTime;
     final flightProgress = (elapsedTime / flightDuration).clamp(0.0, 1.0);
+    
+    // Handle explosive red rock mid-flight explosion
+    if (isExplosiveRed && !hasExploded) {
+      explosionTimer -= dt;
+      if (explosionTimer <= 0) {
+        _explodeInFlight();
+        return; // Exit early after explosion
+      }
+    }
     
     // All rocks are in front of volcano and get larger during flight  
     final targetScale = 1.4; // End up quite large
@@ -209,6 +235,51 @@ class Rock extends SpriteComponent with CollisionCallbacks {
         position.x > gameWidth + 50) {
       removeFromParent();
     }
+  }
+  
+  void _explodeInFlight() {
+    hasExploded = true;
+    final game = findGame()! as VolcanoGame;
+    
+    // Create big explosion for the main rock
+    final explosion = ParticleExplosion(
+      position: position.clone(),
+      colors: [Colors.red, Colors.orange, Colors.yellow, Colors.black],
+      particleCount: 40,
+      speedMultiplier: 2.5,
+      sizeMultiplier: 2.0,
+    );
+    game.add(explosion);
+    
+    // Play crash sound
+    game.playRandomCrashSound();
+    
+    // Spawn 4 smaller red rocks in different directions
+    final random = Random();
+    for (int i = 0; i < 4; i++) {
+      final angle = (i * pi / 2) + random.nextDouble() * 0.5; // Spread them out
+      final distance = 30.0 + random.nextDouble() * 20.0; // 30-50 pixel spread
+      
+      final smallRockPosition = position + Vector2(
+        cos(angle) * distance,
+        sin(angle) * distance,
+      );
+      
+      final smallRock = Rock(
+        isGrey: false,
+        startPosition: smallRockPosition,
+        gameWidth: gameWidth,
+        gameHeight: gameHeight,
+        rockSize: RockSize.small,
+        damagePercent: 0.15, // Less damage than normal rocks
+        speedMultiplier: 0.8, // Slower than normal rocks
+      );
+      
+      game.add(smallRock);
+    }
+    
+    // Remove the main explosive rock
+    removeFromParent();
   }
   
   @override
