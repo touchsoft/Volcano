@@ -18,6 +18,7 @@ import 'components/health_bar.dart';
 import 'components/rock_indicator.dart';
 import 'components/toolbox.dart';
 import 'components/score_display.dart';
+import 'components/truck_death_effects.dart';
 
 // Bridge animation phases
 enum BridgePhase { driving_to_bridge, fading_islands, crossing_bridge, completed }
@@ -67,6 +68,10 @@ class VolcanoGame extends FlameGame with HasCollisionDetection, HasKeyboardHandl
   bool isBridgeSequence = false;
   bool isLevelTransition = false;
   bool isHealthBonus = false;
+  bool isTruckDying = false;
+  double truckDeathTimer = 0.0;
+  static const double truckDeathDuration = 3.0; // 3 seconds of death animation
+  TruckDeathEffects? truckDeathEffects;
   double bridgeAnimationTimer = 0.0;
   double levelTransitionTimer = 0.0;
   int currentLevel = 1;
@@ -267,6 +272,12 @@ class VolcanoGame extends FlameGame with HasCollisionDetection, HasKeyboardHandl
       return;
     }
     
+    // Handle truck death sequence
+    if (isTruckDying) {
+      _updateTruckDeath(dt);
+      return;
+    }
+    
     _handleKeyboardInput();
     
     gameTime += dt;
@@ -336,8 +347,8 @@ class VolcanoGame extends FlameGame with HasCollisionDetection, HasKeyboardHandl
       }
     }
     
-    if (health <= 0.0) {
-      _gameOver();
+    if (health <= 0.0 && !isGameOver) {
+      _startTruckDeath();
     }
     
     // Check for level completion - wait for rocks to be illuminated in indicator
@@ -450,23 +461,56 @@ class VolcanoGame extends FlameGame with HasCollisionDetection, HasKeyboardHandl
       lives = (health * 3).ceil().clamp(0, 3);
       
       // Check if health is depleted
-      if (health <= 0.0) {
-        // Create large explosion at truck position
-        final largeExplosion = ParticleExplosion(
-          position: truck.position.clone(),
-          color: Colors.orange,
-        );
-        add(largeExplosion);
-        
-        // Hide truck
-        truck.opacity = 0.0;
-        
-        // Start screen shake
-        _startGameOverShake();
-        
-        // Trigger game over
-        _gameOver();
+      if (health <= 0.0 && !isTruckDying && !isGameOver) {
+        // Start truck death sequence instead of immediate game over
+        _startTruckDeath();
       }
+    }
+  }
+  
+  void _startTruckDeath() {
+    isTruckDying = true;
+    truckDeathTimer = 0.0;
+    
+    // Stop truck movement immediately
+    truck.isControlled = false;
+    
+    // Stop spawning new rocks
+    isFiringGroup = false;
+    
+    // Add flames and smoke effects to truck
+    truckDeathEffects = TruckDeathEffects(truck: truck);
+    add(truckDeathEffects!);
+  }
+  
+  void _updateTruckDeath(double dt) {
+    truckDeathTimer += dt;
+    
+    if (truckDeathTimer >= truckDeathDuration) {
+      // Create final explosion at truck position
+      final explosion = ParticleExplosion(
+        position: truck.position.clone(),
+        colors: [Colors.red, Colors.orange, Colors.yellow, Colors.black, Colors.white],
+        particleCount: 50,
+        speedMultiplier: 3.0,
+        sizeMultiplier: 2.5,
+      );
+      add(explosion);
+      
+      // Play explosion sound
+      playRandomCrashSound();
+      
+      // Hide truck after explosion
+      truck.opacity = 0.0;
+      
+      // Remove truck death effects
+      if (truckDeathEffects != null) {
+        truckDeathEffects!.removeFromParent();
+        truckDeathEffects = null;
+      }
+      
+      // Death animation complete, show game over
+      _gameOver();
     }
   }
   
@@ -835,6 +879,15 @@ class VolcanoGame extends FlameGame with HasCollisionDetection, HasKeyboardHandl
     isGameOver = false;
     isBridgeSequence = false;
     isLevelTransition = false;
+    isTruckDying = false;
+    truckDeathTimer = 0.0;
+    
+    // Clean up truck death effects if any remain
+    if (truckDeathEffects != null) {
+      truckDeathEffects!.removeFromParent();
+      truckDeathEffects = null;
+    }
+    
     gameTime = 0;
     rockSpawnInterval = 5.0;
     volcanoShaking = false;
